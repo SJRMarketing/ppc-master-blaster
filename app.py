@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import xlsxwriter
 
 # --- Page Configuration ---
 st.set_page_config(page_title="PPC Master Blaster", page_icon="🚀", layout="wide")
@@ -9,7 +10,7 @@ st.set_page_config(page_title="PPC Master Blaster", page_icon="🚀", layout="wi
 # --- Title and Header ---
 st.title("🚀 PPC Master Blaster: Pro Audit Tool")
 st.markdown("""
-**Upload your Google Ads 'Search Keyword' CSV.** This tool generates a forensic **Excel Report** with color-coded alerts for immediate action.
+**Upload your Google Ads 'Search Keyword' CSV.** This tool generates a forensic **Excel Report** with color-coded alerts.
 """)
 
 # --- Sidebar for Settings ---
@@ -72,9 +73,8 @@ def generate_excel(df):
         worksheet.write(0, col_num, value, header_fmt)
         
     # Apply Row Formatting based on Priority
-    # (Iterate through data rows, starting at row 1)
     for row_num, row_data in enumerate(df.values):
-        priority = row_data[0] # Assuming "Priority" is the first column
+        priority = row_data[0] # Priority is first column
         
         if "HIGH" in str(priority):
             fmt = high_priority_fmt
@@ -83,16 +83,16 @@ def generate_excel(df):
         else:
             fmt = normal_fmt
             
-        # Apply format to the whole row
         for col_num, cell_value in enumerate(row_data):
             worksheet.write(row_num + 1, col_num, cell_value, fmt)
             
-    # Adjust Column Widths
+    # Adjust Column Widths (Updated for new Ad Group column)
     worksheet.set_column('A:A', 15) # Priority
     worksheet.set_column('B:B', 25) # Issue
-    worksheet.set_column('C:C', 40) # Keyword (Wide)
-    worksheet.set_column('D:D', 20) # Metric
-    worksheet.set_column('E:E', 40) # The Fix (Wide)
+    worksheet.set_column('C:C', 30) # Ad Group (NEW)
+    worksheet.set_column('D:D', 35) # Keyword
+    worksheet.set_column('E:E', 25) # Metric
+    worksheet.set_column('F:F', 40) # The Fix
     
     writer.close()
     return output.getvalue()
@@ -125,6 +125,9 @@ if uploaded_file is not None:
         
         for index, row in df_clean.iterrows():
             kw = row['Keyword']
+            # Capture Ad Group (or Campaign if available)
+            ad_group = row['Ad group'] if 'Ad group' in row else "Unknown"
+            
             match_type = str(row['Match type'])
             cost = row['Cost']
             conv = row['Conversions']
@@ -134,31 +137,70 @@ if uploaded_file is not None:
             
             # Logic Rules
             if conv == 0 and cost > cpa_threshold:
-                findings.append({"Priority": "HIGH", "Issue": "Cash Incinerator", "Keyword": kw, "Metric": f"${cost:.2f} Spend / 0 Leads", "The Fix": "PAUSE immediately."})
+                findings.append({
+                    "Priority": "HIGH", "Issue": "Cash Incinerator", 
+                    "Ad Group": ad_group, "Keyword": kw, 
+                    "Metric": f"${cost:.2f} Spend / 0 Leads", "The Fix": "PAUSE immediately."
+                })
             
             if "broad" in match_type.lower() and cost > 0:
-                findings.append({"Priority": "HIGH", "Issue": "Broad Match Trap", "Keyword": kw, "Metric": "Broad Match", "The Fix": "Change to Phrase Match."})
+                findings.append({
+                    "Priority": "HIGH", "Issue": "Broad Match Trap", 
+                    "Ad Group": ad_group, "Keyword": kw, 
+                    "Metric": "Broad Match", "The Fix": "Change to Phrase Match."
+                })
                 
             if qs < 3 and impr > min_impr:
-                findings.append({"Priority": "HIGH", "Issue": "Quality Score Anchor", "Keyword": kw, "Metric": f"QS: {qs}/10", "The Fix": "Pause or New Ad Group."})
+                findings.append({
+                    "Priority": "HIGH", "Issue": "Quality Score Anchor", 
+                    "Ad Group": ad_group, "Keyword": kw, 
+                    "Metric": f"QS: {qs}/10", "The Fix": "Pause or New Ad Group."
+                })
                 
             if ctr < 1.0 and impr > (min_impr * 2):
-                findings.append({"Priority": "MED", "Issue": "Click Repellent", "Keyword": kw, "Metric": f"CTR: {ctr}%", "The Fix": "Rewrite Ad Headlines."})
+                findings.append({
+                    "Priority": "MED", "Issue": "Click Repellent", 
+                    "Ad Group": ad_group, "Keyword": kw, 
+                    "Metric": f"CTR: {ctr}%", "The Fix": "Rewrite Ad Headlines."
+                })
 
         # Display Results
         if findings:
             results_df = pd.DataFrame(findings)
+            
+            # Reorder Columns to put Ad Group next to Keyword
+            cols = ["Priority", "Issue", "Ad Group", "Keyword", "Metric", "The Fix"]
+            results_df = results_df[cols]
             
             # Sort by Priority
             priority_map = {"HIGH": 1, "MED": 2, "LOW": 3}
             results_df['SortKey'] = results_df['Priority'].map(priority_map)
             results_df = results_df.sort_values('SortKey').drop('SortKey', axis=1)
 
-            # Show metrics
+            # --- VISUAL DASHBOARD ---
             col1, col2, col3 = st.columns(3)
             col1.metric("Total Spend Analyzed", f"${df_clean['Cost'].sum():.2f}")
             col2.metric("Critical Issues Found", len(results_df))
             
+            st.divider()
+            
+            # Charts
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                st.subheader("⚠️ Issues by Category")
+                st.bar_chart(results_df['Issue'].value_counts())
+                
+            with c2:
+                st.subheader("🔥 Top Cash Incinerators")
+                incinerators = results_df[results_df['Issue'] == 'Cash Incinerator']
+                if not incinerators.empty:
+                    # Clean metric to float for charting
+                    incinerators['Lost Spend'] = incinerators['Metric'].apply(lambda x: float(x.split('$')[1].split(' ')[0]))
+                    st.bar_chart(incinerators.set_index('Keyword')['Lost Spend'])
+                else:
+                    st.info("No Cash Incinerators found! (Good job)")
+
             st.divider()
             st.subheader("Preview of Findings")
             st.dataframe(results_df.head(10), use_container_width=True)
@@ -169,7 +211,7 @@ if uploaded_file is not None:
             st.download_button(
                 label="📥 Download Professional Excel Report (.xlsx)",
                 data=excel_data,
-                file_name="Master_Blaster_Audit.xlsx",
+                file_name="Master_Blaster_Pro_Report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         else:
